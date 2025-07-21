@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -15,6 +16,13 @@ type User struct {
 	ID   string
 	Conn *websocket.Conn
 	Peer *User
+}
+
+type Message struct {
+	Type     string `json:"type"`
+	Content  string `json:"content"`
+	Sender   string `json:"sender"`
+	Receiver string `json:"receiver"`
 }
 
 var (
@@ -46,11 +54,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s connected and added to matchmaking queue\n", userID)
 	mu_clients.Unlock()
 
-	tryMatchUsers()
-	//handleMessages(user)
+	matchUsers()
+	handleMessages(user)
 }
 
-func tryMatchUsers() {
+func matchUsers() {
 	mu_clients.Lock()
 	defer mu_clients.Unlock()
 
@@ -61,15 +69,68 @@ func tryMatchUsers() {
 		a.Peer = b
 		b.Peer = a
 		log.Printf("Matched %s with %s\n", a.ID, b.ID)
-
+		a.Conn.WriteJSON(map[string]string{"status": "matched", "peer": b.ID})
+		b.Conn.WriteJSON(map[string]string{"status": "matched", "peer": a.ID})
 	}
 }
 
-func removeFromQueue(user *User) {
+func disconnectUser(user *User) {
+	mu_clients.Lock()
+	defer mu_clients.Unlock()
+
+	if user.Peer != nil {
+		user.Peer.Peer = nil
+		waitingList = append(waitingList, user.Peer)
+		log.Printf("%s disconnected from %s\n", user.ID, user.Peer.ID)
+	}
+
+	delete(clients, user.ID)
 	for i, u := range waitingList {
-		if u == user {
+		if u.ID == user.ID {
 			waitingList = append(waitingList[:i], waitingList[i+1:]...)
+			log.Printf("%s removed from waiting list\n", user.ID)
 			break
+		}
+	}
+	log.Printf("%s disconnected", user.ID)
+}
+
+func handleMessages(user *User) {
+	defer func() {
+		disconnectUser(user)
+	}()
+
+	for {
+		messageType, msg, err := user.Conn.ReadMessage()
+		if err != nil {
+			log.Printf("Error reading message from %s: %v\n", user.ID, err)
+			return
+		}
+
+		var cur_msg Message
+		msg_err := json.Unmarshal(msg, &cur_msg)
+		if msg_err != nil || cur_msg.Type == "" {
+			log.Printf("Invalid message format")
+			log.Printf("This is the wrong message - %s", msg)
+		}
+
+		log.Printf("Received message type: %s\n", cur_msg)
+		log.Printf("Received message from %s: %s\n", user.ID, msg)
+
+		if user.Peer != nil {
+			err = user.Peer.Conn.WriteJSON(cur_msg)
+			if err != nil {
+				log.Printf("Error sending message to %s: %v\n", user.Peer.ID, err)
+				return
+			}
+			log.Printf("Sent message from %s to %s\n", user.ID, user.Peer.ID)
+		} else {
+			log.Printf("%s has no peer to send the message to\n", user.ID)
+		}
+
+		if err := user.Conn.WriteMessage(messageType, msg); err != nil {
+			log.Println(err)
+			return
 		}
 	}
 }
@@ -79,6 +140,10 @@ func main() {
 	port := "8080"
 	http.HandleFunc("/debug", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Connected clients: %d\n", len(clients))
+		for _, user := range clients {
+			fmt.Fprintf(w, "User ID: %s\n", user.ID)
+		}
+
 		fmt.Fprintf(w, "Waiting list: %d\n", len(waitingList))
 		log.Printf("debug accessed")
 
