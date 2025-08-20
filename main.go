@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -141,7 +142,11 @@ func handleMessages(user *User) {
 
 func main() {
 	http.HandleFunc("/ws", handleWebSocket)
-	port := "8080"
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Printf("Starting WebSocket server on port %s", port)
 	http.HandleFunc("/debug", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Connected clients: %d\n", len(clients))
 		for _, user := range clients {
