@@ -48,6 +48,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	userID := fmt.Sprintf("user_%d", rand.Intn(1000))
 	user := &User{ID: userID, Conn: conn}
 
+	user.Conn.WriteJSON(map[string]string{"status": "connected", "userID": user.ID})
+
 	mu_clients.Lock()
 	clients[userID] = user
 	waitingList = append(waitingList, user)
@@ -69,8 +71,8 @@ func matchUsers() {
 		a.Peer = b
 		b.Peer = a
 		log.Printf("Matched %s with %s\n", a.ID, b.ID)
-		a.Conn.WriteJSON(map[string]string{"status": "matched", "peer": b.ID})
-		b.Conn.WriteJSON(map[string]string{"status": "matched", "peer": a.ID})
+		a.Conn.WriteJSON(map[string]string{"status": "matched", "userID": a.ID, "peer": b.ID})
+		b.Conn.WriteJSON(map[string]string{"status": "matched", "userID": b.ID, "peer": a.ID})
 	}
 }
 
@@ -79,6 +81,7 @@ func disconnectUser(user *User) {
 	defer mu_clients.Unlock()
 
 	if user.Peer != nil {
+		user.Peer.Conn.WriteJSON(map[string]string{"status": "disconnected_peer", "peer": user.ID})
 		user.Peer.Peer = nil
 		waitingList = append(waitingList, user.Peer)
 		log.Printf("%s disconnected from %s\n", user.ID, user.Peer.ID)
@@ -104,6 +107,7 @@ func handleMessages(user *User) {
 		messageType, msg, err := user.Conn.ReadMessage()
 		if err != nil {
 			log.Printf("Error reading message from %s: %v\n", user.ID, err)
+			log.Printf("This is the message sent from %s : %v", user.ID, msg)
 			return
 		}
 
@@ -111,7 +115,7 @@ func handleMessages(user *User) {
 		msg_err := json.Unmarshal(msg, &cur_msg)
 		if msg_err != nil || cur_msg.Type == "" {
 			log.Printf("Invalid message format")
-			log.Printf("This is the wrong message - %s", msg)
+			log.Printf("This is the wrong message - %s", cur_msg)
 		}
 
 		log.Printf("Received message type: %s\n", cur_msg)
